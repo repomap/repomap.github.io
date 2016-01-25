@@ -5,13 +5,14 @@ body {
   overflow: auto;
   font-size: 1pt;
 }
-body * {
+body>* {
   color: black;
   font-size: 12pt;
 }
 </style>
 
 <h2 id=h2 style="font-size: 32pt; font-weight: lighter; margin: 0px;">Repository graph</h2>
+<div id=subtitle style="color: silver; font-size: 18pt; font-weight: 100;">Loading...</div>
 
 <script id=grk-script> /******* begin of JS *******/
 
@@ -26,36 +27,75 @@ function updateFromWindow() {
 
   document.body.style.cssText = 'color: transparent; overflow: auto; font-size: 1pt;';
   window.onload = setTimeout(onload, 1);
-  var subtitle = document.createElement('div');
-  subtitle.textContent = 'Loading...';
-  subtitle.style.cssText = 'color: silver; font-size: 18pt; font-weight: 100;';
-  document.body.appendChild(subtitle);
 
-  var uniqueKey = deriveUniqueKey(getLocationSeed());
+  var target_owner, target_repo;
+  (function() {
+    var h2 = document.getElementById('h2');
+    var h2_spans = h2.getElementsByTagName('span');
+    if (h2_spans.length === 2) {
+      target_owner = h2_spans[0].textContent;
+      target_repo = h2_spans[0].textContent;
+    }
+    else {
+      var pathMatch = /^\/([^/]+)\/([^/]+)\/[^/]*$/.exec(location.pathname);
+      if (pathMatch) {
+        target_owner = pathMatch[1];
+        target_repo = pathMatch[2];
+      }
+      else {
+        target_owner = 'microsoft';
+        target_repo = 'typescript';
+      }
+      h2.textContent = '';
+      var ownerSpan = document.createElement('span');
+      ownerSpan.textContent = target_owner;
+      h2.appendChild(ownerSpan);
+      var separ = document.createElement('b');
+      separ.textContent = ' / ';
+      separ.style.color = 'gray';
+      h2.appendChild(separ);
+      var repoSpan = document.createElement('span');
+      repoSpan.textContent = target_repo;
+      h2.appendChild(repoSpan);
+    }
+  })();
+
+
+  var uniqueKey = target_owner+'_'+target_repo;
+  uniqueKey = uniqueKey.toLowerCase().replace(/[^0-9a-zA-Z_]/, '')+'_'+deriveUniqueKey(uniqueKey.toLowerCase());
   detectPersistence(uniqueKey, function(attached) {
-    // TODO: process local if needed
+    // TODO: process
   });
+
+  var subtitle = document.getElementById('subtitle');
+  subtitle.textContent = 'Downloading data...';
 
   var baseUrl;
 
   function onload() {
 
-    subtitle.textContent = 'Processing...';
+    var localTimestamp = grkScript.getAttribute('timestamp');
+    if (localTimestamp) try {
+      localTimestamp = localTimestamp|0;
+    } catch (err) { }
 
-    updateDb(function() {
-      subtitle.textContent = 'Rendering...';
-    });
-  }
+    subtitle.textContent = 'Resolving...';
 
-  function updateDb(callback) {
-    if (typeof db !== 'undefined' && db && db.lastUpdates) {
-      // TODO: fetch only new...
+    if (localTimestamp) {
+      updateRepoSince(localTimestamp);
     }
     else {
-      // TODO: fetch whole history...
+      fetchRepoFromStart();
     }
 
-    setTimeout(callback, 100);
+  }
+
+  function updateRepoSince() {
+    subtitle.textContent = 'Rendering...';
+  }
+
+  function fetchRepoFromStart() {
+    subtitle.textContent = 'Rendering';
   }
 
   function jsonpFetchJson(url, callback) {
@@ -172,27 +212,17 @@ function updateFromWindow() {
   }
 
 
-  function getLocationSeed() {
-    var path = location.pathname;
-    var posSlash = path.lastIndexOf('/');
-    if (posSlash>=0) path = path.slice(0, posSlash);
-    return location.protocol+'//'+location.host+(location.port?':'+location.port:'')+path;
-  }
 
 
   function deriveUniqueKey(locationSeed) {
     var key = (locationSeed + '').split('?')[0].split('#')[0].toLowerCase();
-
     var posIndexTrail = key.search(/\/index\.html$/);
     if (posIndexTrail > 0) key = key.slice(0, posIndexTrail);
-
     if (key.charAt(0) === '/')
       key = key.slice(1);
     if (key.slice(-1) === '/')
       key = key.slice(0, key.length - 1);
-
     return smallHash(key) + '-' + smallHash(key.slice(1) + 'a');
-
     function smallHash(key) {
       for (var h = 0, i = 0; i < key.length; i++) {
         h = Math.pow(31, h + 31 / key.charCodeAt(i));
@@ -200,9 +230,7 @@ function updateFromWindow() {
       }
       return (h * 2000000000) | 0;
     }
-
   } // deriveUniqueKey
-
 
   function detectPersistence(uniqueKey, callback) {
     persistence();
