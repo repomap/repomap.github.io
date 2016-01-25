@@ -74,14 +74,14 @@ function updateFromWindow() {
 
   function onload() {
 
-    var localTimestamp = grkScript.getAttribute('timestamp');
-    if (localTimestamp) try {
-      localTimestamp = localTimestamp|0;
+    var cacheTimestamp = grkScript.getAttribute('cache-timestamp');
+    if (cacheTimestamp) try {
+      cacheTimestamp = cacheTimestamp|0;
     } catch (err) { }
 
     subtitle.textContent = 'Resolving...';
 
-    if (localTimestamp) {
+    if (cacheTimestamp) {
       updateRepoSince(localTimestamp);
     }
     else {
@@ -109,7 +109,7 @@ function updateFromWindow() {
       iframeWin = jsonpFetchJson.iframeWin = ifr.contentWindow || ifr.window;
     }
 
-    var id = 'url_'+url.replace(/[^a-zA-Z0-9_$]/g, '');
+    var id = 'url_'+(jsonpFetchJson.scr_increment=1+(jsonpFetchJson.scr_increment|0));
     var callbackUrl =
         url +
         (url.indexOf('?')>=0?'&callback=':'?callback=')+id;
@@ -120,33 +120,64 @@ function updateFromWindow() {
     scr.src = callbackUrl;
     iframeWin.document.body.appendChild(scr);
 
+    var jsonp;
+    var jsonp_called;
+    var load_called;
+    var error_called;
+
+    function handleLoad() {
+      load_called = true;
+      handleAll();
+    }
+
+    function handleError(e) {
+      error_called = e.message || 'Network failure';
+      handleAll();
+    }
+
     function handleJsonp(json) {
+      jsonp = json;
+      jsonp_called = true;
+      handleAll();
+    }
 
-      setTimeout(function() {
-        iframeWin.document.body.removeChild(scr);
-      }, 1); 
+    function handleAll() {
 
-      var logMsg =
-          (json.data && json.data.length ?
-           json.data.length + ' entries':
-           '') +
-          (json.meta ?
-           ' (req#'+(json.meta['X-RateLimit-Limit']-
-                     json.meta['X-RateLimit-Remaining'])+
-           ', remains '+json.meta['X-RateLimit-Remaining']+
-           ' for the next '+formatRemaining(
-            (json.meta['X-RateLimit-Reset']*1000)-new Date())+
-           ')':
-           '');
+      if (handleAll.queued) return;
+      handleAll.queued = setTimeout(function() {
 
-      console.log(logMsg);
-      if (json.data.documentation_url===
-          'https://developer.github.com/v3/#rate-limiting') {
-        console.log(callbackUrl+' ', json.data.message);
-        json.data = null;
-      }
+        setTimeout(function() { // remove script element one breath later, due to weird IE
+          iframeWin.document.body.removeChild(scr);
+        }, 1); 
 
-      callback(json);
+        if (!jsonp_called) {
+          var err = error_called || 'JSONP parse error';
+          callback(new Error(err));
+          return;
+        }
+
+        var logMsg =
+            (json.data && json.data.length ?
+             json.data.length + ' entries':
+             '') +
+            (json.meta ?
+             ' (req#'+(json.meta['X-RateLimit-Limit']-
+                       json.meta['X-RateLimit-Remaining'])+
+             ', remains '+json.meta['X-RateLimit-Remaining']+
+             ' for the next '+formatRemaining(
+              (json.meta['X-RateLimit-Reset']*1000)-new Date())+
+             ')':
+             '');
+
+        console.log(logMsg);
+        if (json.data.documentation_url===
+            'https://developer.github.com/v3/#rate-limiting') {
+          console.log(callbackUrl+' ', json.data.message);
+          json.data = null;
+        }
+
+        callback(null, json);
+      }, 1);
     }
   } // jsonpFetchJson
 
@@ -168,7 +199,10 @@ function updateFromWindow() {
             'page='+nextPage;
       }
 
-      fetchJson(fetchUrl, function(json) {
+      fetchJson(fetchUrl, function(error, json) {
+
+        if (error) throw error;// TODO handle pages better
+
         console.log('fetchJson(',fetchUrl,') = ', json);
         if (json.data)
           collectData = collectData ?
