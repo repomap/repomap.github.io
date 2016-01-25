@@ -1,0 +1,798 @@
+/* <style>
+* { box-sizing: border-box; }
+body {
+  color: transparent;
+  overflow: auto;
+  font-size: 1pt;
+}
+body * {
+  color: black;
+  font-size: 12pt;
+}
+</style>
+
+<h2 id=h2 style="font-size: 32pt; font-weight: lighter; margin: 0px;">Repository graph</h2>
+
+<script id=grk-script> /******* begin of JS *******/
+
+if (typeof window!=='undefined') updateFromWindow();
+else if (typeof require==='function') updateFromNode();
+else throw new Error('Unknown host, cease to continue.');
+
+
+function updateFromWindow() {
+
+  var grkScript = document.getElementById('grk-script');
+
+  document.body.style.cssText = 'color: transparent; overflow: auto; font-size: 1pt;';
+  window.onload = setTimeout(onload, 1);
+  var subtitle = document.createElement('div');
+  subtitle.textContent = 'Loading...';
+  subtitle.style.cssText = 'color: silver; font-size: 18pt; font-weight: 100;';
+  document.body.appendChild(subtitle);
+
+  var uniqueKey = deriveUniqueKey(getLocationSeed());
+  detectPersistence(uniqueKey, function(attached) {
+    // TODO: process local if needed
+  });
+
+  var baseUrl;
+
+  function onload() {
+
+    subtitle.textContent = 'Processing...';
+
+    updateDb(function() {
+      subtitle.textContent = 'Rendering...';
+    });
+  }
+
+  function updateDb(callback) {
+    if (typeof db !== 'undefined' && db && db.lastUpdates) {
+      // TODO: fetch only new...
+    }
+    else {
+      // TODO: fetch whole history...
+    }
+
+    setTimeout(callback, 100);
+  }
+
+  function jsonpFetchJson(url, callback) {
+
+    var iframeWin = jsonpFetchJson.iframeWin;
+    if (!iframeWin) {
+      var ifr = document.createElement('iframe');
+      ifr.style.cssText = 'width: 0; height: 0;';
+      ifr.src = 'about:blank';
+      document.body.appendChild(ifr);
+      iframeWin = jsonpFetchJson.iframeWin = ifr.contentWindow || ifr.window;
+    }
+
+    var id = 'url_'+url.replace(/[^a-zA-Z0-9_$]/g, '');
+    var callbackUrl =
+        url +
+        (url.indexOf('?')>=0?'&callback=':'?callback=')+id;
+
+    iframeWin[id] = handleJsonp;
+
+    var scr = iframeWin.document.createElement('script');
+    scr.src = callbackUrl;
+    iframeWin.document.body.appendChild(scr);
+
+    function handleJsonp(json) {
+
+      setTimeout(function() {
+        iframeWin.document.body.removeChild(scr);
+      }, 1); 
+
+      var logMsg =
+          (json.data && json.data.length ?
+           json.data.length + ' entries':
+           '') +
+          (json.meta ?
+           ' (req#'+(json.meta['X-RateLimit-Limit']-
+                     json.meta['X-RateLimit-Remaining'])+
+           ', remains '+json.meta['X-RateLimit-Remaining']+
+           ' for the next '+formatRemaining(
+            (json.meta['X-RateLimit-Reset']*1000)-new Date())+
+           ')':
+           '');
+
+      console.log(logMsg);
+      if (json.data.documentation_url===
+          'https://developer.github.com/v3/#rate-limiting') {
+        console.log(callbackUrl+' ', json.data.message);
+        json.data = null;
+      }
+
+      callback(json);
+    }
+  } // jsonpFetchJson
+
+
+  function loadPages(fetchJson, url, maxPage, callback) {
+
+    var collectData;
+    continueFetch(1);
+
+    function continueFetch(nextPage) {
+      var fetchUrl = url;
+      if (nextPage>1) {
+        fetchUrl = fetchUrl.replace(
+          /[\?\&]page\=\d+/,
+          'page='+nextPage);
+        if (fetchUrl===url)
+          fetchUrl +=
+            (fetchUrl.indexOf('?')>=0?'&':'?')+
+            'page='+nextPage;
+      }
+
+      fetchJson(fetchUrl, function(json) {
+        console.log('fetchJson(',fetchUrl,') = ', json);
+        if (json.data)
+          collectData = collectData ?
+            collectData.concat(json.data) :
+          json.data;
+
+        var nextPageFromResponse;
+        if (json.meta.Link) {
+          for (var i = 0; i < json.meta.Link.length; i++) {
+            var lnkArr = json.meta.Link[i];
+            if (lnkArr.length>1 && lnkArr[1].rel==='next') {
+              var pageMatch = /[\&\?]page\=(\d+)/.exec(lnkArr[0]);
+              if (pageMatch) { 
+                nextPageFromResponse = parseInt(pageMatch[1]);
+                break;
+              }
+            }
+          }
+        }
+
+        if (nextPageFromResponse===nextPage+1
+            && !(nextPageFromResponse>maxPage)) {
+          continueFetch(nextPage+1);
+          return;
+        }
+
+        callback(collectData);
+      });
+    }
+  } // loadPages
+
+
+  function formatRemaining(tm) {
+    if (typeof tm!=='number') tm = +tm;
+    var min = Math.round(tm/1000/60);
+    if (min<50) return min+'min';
+    var hr = Math.round(tm/1000/60/60);
+    if (hr < 48) return hr+'h';
+    var dy = Math.round(tm/1000/60/60/24);
+    return dy+'d';
+  }
+
+
+  function getLocationSeed() {
+    var path = location.pathname;
+    var posSlash = path.lastIndexOf('/');
+    if (posSlash>=0) path = path.slice(0, posSlash);
+    return location.protocol+'//'+location.host+(location.port?':'+location.port:'')+path;
+  }
+
+
+  function deriveUniqueKey(locationSeed) {
+    var key = (locationSeed + '').split('?')[0].split('#')[0].toLowerCase();
+
+    var posIndexTrail = key.search(/\/index\.html$/);
+    if (posIndexTrail > 0) key = key.slice(0, posIndexTrail);
+
+    if (key.charAt(0) === '/')
+      key = key.slice(1);
+    if (key.slice(-1) === '/')
+      key = key.slice(0, key.length - 1);
+
+    return smallHash(key) + '-' + smallHash(key.slice(1) + 'a');
+
+    function smallHash(key) {
+      for (var h = 0, i = 0; i < key.length; i++) {
+        h = Math.pow(31, h + 31 / key.charCodeAt(i));
+        h -= h | 0;
+      }
+      return (h * 2000000000) | 0;
+    }
+
+  } // deriveUniqueKey
+
+
+  function detectPersistence(uniqueKey, callback) {
+    persistence();
+    persistence.attached.indexedDB.detect(uniqueKey, function(attached_indexedDB) {
+      if (attached_indexedDB) return callback(attached_indexedDB);
+
+      persistence.attached.webSQL.detect(uniqueKey, function(attached_webSQL) {
+        if (attached_webSQL) return callback(attached_webSQL);
+
+        persistence.attached.localStorage.detect(uniqueKey, function(attached_localStorage) {
+          if (attached_localStorage) return callback(attached_localStorage);
+          else callback();
+        });
+      });
+    });
+  } // detectPersistence
+
+
+  function persistence() {
+    (function (persistence) {
+        function getIndexedDB() {
+            try {
+                return typeof indexedDB === 'undefined' || typeof indexedDB.open !== 'function' ? null : indexedDB;
+            }
+            catch (error) {
+                return null;
+            }
+        }
+        var attached;
+        (function (attached) {
+            var indexedDB;
+            (function (indexedDB) {
+                indexedDB.name = 'indexedDB';
+                function detect(uniqueKey, callback) {
+                    try {
+                        detectCore(uniqueKey, callback);
+                    }
+                    catch (error) {
+                        callback(null);
+                    }
+                }
+                indexedDB.detect = detect;
+                function detectCore(uniqueKey, callback) {
+                    var indexedDBInstance = getIndexedDB();
+                    if (!indexedDBInstance) {
+                        callback(null);
+                        return;
+                    }
+                    var dbName = uniqueKey || 'portabled';
+                    var openRequest = indexedDBInstance.open(dbName, 1);
+                    openRequest.onerror = function (errorEvent) { return callback(null); };
+                    openRequest.onupgradeneeded = createDBAndTables;
+                    openRequest.onsuccess = function (event) {
+                        var db = openRequest.result;
+                        try {
+                            var transaction = db.transaction(['files', 'metadata']);
+                            // files mentioned here, but not really used to detect
+                            // broken multi-store transaction implementation in Safari
+                            transaction.onerror = function (errorEvent) { return callback(null); };
+                            var metadataStore = transaction.objectStore('metadata');
+                            var filesStore = transaction.objectStore('files');
+                            var editedUTCRequest = metadataStore.get('editedUTC');
+                        }
+                        catch (getStoreError) {
+                            callback(null);
+                            return;
+                        }
+                        if (!editedUTCRequest) {
+                            callback(null);
+                            return;
+                        }
+                        editedUTCRequest.onerror = function (errorEvent) {
+                            var detached = new IndexedDBDetached(db, null);
+                            callback(detached);
+                        };
+                        editedUTCRequest.onsuccess = function (event) {
+                            var result = editedUTCRequest.result;
+                            var detached = new IndexedDBDetached(db, result && typeof result.value === 'number' ? result.value : null);
+                            callback(detached);
+                        };
+                    };
+                    function createDBAndTables() {
+                        var db = openRequest.result;
+                        var filesStore = db.createObjectStore('files', { keyPath: 'path' });
+                        var metadataStore = db.createObjectStore('metadata', { keyPath: 'property' });
+                    }
+                }
+                var IndexedDBDetached = (function () {
+                    function IndexedDBDetached(_db, timestamp) {
+                        this._db = _db;
+                        this.timestamp = timestamp;
+                    }
+                    IndexedDBDetached.prototype.applyTo = function (mainDrive, callback) {
+                        var _this = this;
+                        var transaction = this._db.transaction(['files', 'metadata'], 'readwrite');
+                        var metadataStore = transaction.objectStore('metadata');
+                        var filesStore = transaction.objectStore('files');
+                        var countRequest = filesStore.count();
+                        countRequest.onerror = function (errorEvent) {
+                            console.error('Could not count files store.');
+                            callback(null);
+                        };
+                        countRequest.onsuccess = function (event) {
+                            var storeCount = countRequest.result;
+                            var cursorRequest = filesStore.openCursor();
+                            cursorRequest.onerror = function (errorEvent) { return callback(null); };
+                            // to cleanup any files which content is the same on the main drive
+                            var deleteList = [];
+                            var anyLeft = false;
+                            var processedCount = 0;
+                            cursorRequest.onsuccess = function (event) {
+                                var cursor = cursorRequest.result;
+                                if (!cursor) {
+                                    // cleaning up files whose content is duplicating the main drive
+                                    if (anyLeft) {
+                                        for (var i = 0; i < deleteList.length; i++) {
+                                            filesStore['delete'](deleteList[i]);
+                                        }
+                                    }
+                                    else {
+                                        filesStore.clear();
+                                        metadataStore.clear();
+                                    }
+                                    callback(new IndexedDBShadow(_this._db, _this.timestamp));
+                                    return;
+                                }
+                                if (callback.progress)
+                                    callback.progress(processedCount, storeCount);
+                                processedCount++;
+                                var result = cursor.value;
+                                if (result && result.path) {
+                                    var existingContent = mainDrive.read(result.path);
+                                    if (existingContent === result.content) {
+                                        deleteList.push(result.path);
+                                    }
+                                    else {
+                                        mainDrive.timestamp = _this.timestamp;
+                                        mainDrive.write(result.path, result.content);
+                                        anyLeft = true;
+                                    }
+                                }
+                                cursor['continue']();
+                            }; // cursorRequest.onsuccess
+                        }; // countRequest.onsuccess
+                    };
+                    IndexedDBDetached.prototype.purge = function (callback) {
+                        var transaction = this._db.transaction(['files', 'metadata'], 'readwrite');
+                        var filesStore = transaction.objectStore('files');
+                        filesStore.clear();
+                        var metadataStore = transaction.objectStore('metadata');
+                        metadataStore.clear();
+                        callback(new IndexedDBShadow(this._db, -1));
+                    };
+                    return IndexedDBDetached;
+                }());
+                var IndexedDBShadow = (function () {
+                    function IndexedDBShadow(_db, timestamp) {
+                        this._db = _db;
+                        this.timestamp = timestamp;
+                    }
+                    IndexedDBShadow.prototype.write = function (file, content) {
+                        var transaction = this._db.transaction(['files', 'metadata'], 'readwrite');
+                        var filesStore = transaction.objectStore('files');
+                        var metadataStore = transaction.objectStore('metadata');
+                        // no file deletion here: we need to keep account of deletions too!
+                        var fileData = {
+                            path: file,
+                            content: content,
+                            state: null
+                        };
+                        var putFile = filesStore.put(fileData);
+                        var md = {
+                            property: 'editedUTC',
+                            value: Date.now()
+                        };
+                        metadataStore.put(md);
+                    };
+                    return IndexedDBShadow;
+                }());
+            })(indexedDB = attached.indexedDB || (attached.indexedDB = {}));
+        })(attached = persistence.attached || (persistence.attached = {}));
+    })(persistence || (persistence = {}));
+    (function (persistence) {
+        function getLocalStorage() {
+            return typeof localStorage === 'undefined' || typeof localStorage.length !== 'number' ? null : localStorage;
+        }
+        // is it OK&
+        var attached;
+        (function (attached) {
+            var localStorage;
+            (function (localStorage) {
+                localStorage.name = 'localStorage';
+                function detect(uniqueKey, callback) {
+                    try {
+                        detectCore(uniqueKey, callback);
+                    }
+                    catch (error) {
+                        callback(null);
+                    }
+                }
+                localStorage.detect = detect;
+                function detectCore(uniqueKey, callback) {
+                    var localStorageInstance = getLocalStorage();
+                    if (!localStorageInstance) {
+                        callback(null);
+                        return;
+                    }
+                    var access = new LocalStorageAccess(localStorageInstance, uniqueKey);
+                    var dt = new LocalStorageDetached(access);
+                    callback(dt);
+                }
+                var LocalStorageAccess = (function () {
+                    function LocalStorageAccess(_localStorage, _prefix) {
+                        this._localStorage = _localStorage;
+                        this._prefix = _prefix;
+                        this._cache = {};
+                    }
+                    LocalStorageAccess.prototype.get = function (key) {
+                        var k = this._expandKey(key);
+                        var r = this._localStorage.getItem(k);
+                        return r;
+                    };
+                    LocalStorageAccess.prototype.set = function (key, value) {
+                        var k = this._expandKey(key);
+                        return this._localStorage.setItem(k, value);
+                    };
+                    LocalStorageAccess.prototype.remove = function (key) {
+                        var k = this._expandKey(key);
+                        return this._localStorage.removeItem(k);
+                    };
+                    LocalStorageAccess.prototype.keys = function () {
+                        var result = [];
+                        var len = this._localStorage.length;
+                        for (var i = 0; i < len; i++) {
+                            var str = this._localStorage.key(i);
+                            if (str.length > this._prefix.length && str.slice(0, this._prefix.length) === this._prefix)
+                                result.push(str.slice(this._prefix.length));
+                        }
+                        return result;
+                    };
+                    LocalStorageAccess.prototype._expandKey = function (key) {
+                        var k;
+                        if (!key) {
+                            k = this._prefix;
+                        }
+                        else {
+                            k = this._cache[key];
+                            if (!k)
+                                this._cache[key] = k = this._prefix + key;
+                        }
+                        return k;
+                    };
+                    return LocalStorageAccess;
+                }());
+                var LocalStorageDetached = (function () {
+                    function LocalStorageDetached(_access) {
+                        this._access = _access;
+                        this.timestamp = 0;
+                        var timestampStr = this._access.get('*timestamp');
+                        if (timestampStr && timestampStr.charAt(0) >= '0' && timestampStr.charAt(0) <= '9') {
+                            try {
+                                this.timestamp = parseInt(timestampStr);
+                            }
+                            catch (parseError) {
+                            }
+                        }
+                    }
+                    LocalStorageDetached.prototype.applyTo = function (mainDrive, callback) {
+                        var keys = this._access.keys();
+                        for (var i = 0; i < keys.length; i++) {
+                            var k = keys[i];
+                            if (k.charAt(0) === '/') {
+                                var value = this._access.get(k);
+                                mainDrive.write(k, value);
+                            }
+                        }
+                        var shadow = new LocalStorageShadow(this._access, mainDrive.timestamp);
+                        callback(shadow);
+                    };
+                    LocalStorageDetached.prototype.purge = function (callback) {
+                        var keys = this._access.keys();
+                        for (var i = 0; i < keys.length; i++) {
+                            var k = keys[i];
+                            if (k.charAt(0) === '/') {
+                                var value = this._access.remove(k);
+                            }
+                        }
+                        var shadow = new LocalStorageShadow(this._access, this.timestamp);
+                        callback(shadow);
+                    };
+                    return LocalStorageDetached;
+                }());
+                var LocalStorageShadow = (function () {
+                    function LocalStorageShadow(_access, timestamp) {
+                        this._access = _access;
+                        this.timestamp = timestamp;
+                    }
+                    LocalStorageShadow.prototype.write = function (file, content) {
+                        this._access.set(file, content);
+                        this._access.set('*timestamp', this.timestamp);
+                    };
+                    return LocalStorageShadow;
+                }());
+            })(localStorage = attached.localStorage || (attached.localStorage = {}));
+        })(attached = persistence.attached || (persistence.attached = {}));
+    })(persistence || (persistence = {}));
+    (function (persistence) {
+        function getOpenDatabase() {
+            return typeof openDatabase !== 'function' ? null : openDatabase;
+        }
+        var attached;
+        (function (attached) {
+            var webSQL;
+            (function (webSQL) {
+                webSQL.name = 'webSQL';
+                function detect(uniqueKey, callback) {
+                    try {
+                        detectCore(uniqueKey, callback);
+                    }
+                    catch (error) {
+                        callback(null);
+                    }
+                }
+                webSQL.detect = detect;
+                function detectCore(uniqueKey, callback) {
+                    var openDatabaseInstance = getOpenDatabase();
+                    if (!openDatabaseInstance) {
+                        callback(null);
+                        return;
+                    }
+                    var dbName = uniqueKey || 'portabled';
+                    var db = openDatabase(dbName, // name
+                    1, // version
+                    'Portabled virtual filesystem data', // displayName
+                    1024 * 1024); // size
+                    // upgradeCallback?
+                    db.readTransaction(function (transaction) {
+                        transaction.executeSql('SELECT value from "*metadata" WHERE name=\'editedUTC\'', [], function (transaction, result) {
+                            var editedValue = null;
+                            if (result.rows && result.rows.length === 1) {
+                                var editedValueStr = result.rows.item(0).value;
+                                if (typeof editedValueStr === 'string') {
+                                    try {
+                                        editedValue = parseInt(editedValueStr);
+                                    }
+                                    catch (error) {
+                                    }
+                                }
+                                else if (typeof editedValueStr === 'number') {
+                                    editedValue = editedValueStr;
+                                }
+                            }
+                            callback(new WebSQLDetached(db, editedValue || 0, true));
+                        }, function (transaction, sqlError) {
+                            // no data
+                            callback(new WebSQLDetached(db, 0, false));
+                        });
+                    }, function (sqlError) {
+                        // failed to load
+                        callback(null);
+                    });
+                }
+                var WebSQLDetached = (function () {
+                    function WebSQLDetached(_db, timestamp, _metadataTableIsValid) {
+                        this._db = _db;
+                        this.timestamp = timestamp;
+                        this._metadataTableIsValid = _metadataTableIsValid;
+                    }
+                    WebSQLDetached.prototype.applyTo = function (mainDrive, callback) {
+                        var _this = this;
+                        this._db.readTransaction(function (transaction) { return listAllTables(transaction, function (tables) {
+                            var ftab = getFilenamesFromTables(tables);
+                            _this._applyToWithFiles(transaction, ftab, mainDrive, callback);
+                        }, function (sqlError) {
+                            reportSQLError('Failed to list tables for the webSQL database.', sqlError);
+                            callback(new WebSQLShadow(_this._db, _this.timestamp, _this._metadataTableIsValid));
+                        }); }, function (sqlError) {
+                            reportSQLError('Failed to open read transaction for the webSQL database.', sqlError);
+                            callback(new WebSQLShadow(_this._db, _this.timestamp, _this._metadataTableIsValid));
+                        });
+                    };
+                    WebSQLDetached.prototype.purge = function (callback) {
+                        var _this = this;
+                        this._db.transaction(function (transaction) { return listAllTables(transaction, function (tables) {
+                            _this._purgeWithTables(transaction, tables, callback);
+                        }, function (sqlError) {
+                            reportSQLError('Failed to list tables for the webSQL database.', sqlError);
+                            callback(new WebSQLShadow(_this._db, 0, false));
+                        }); }, function (sqlError) {
+                            reportSQLError('Failed to open read-write transaction for the webSQL database.', sqlError);
+                            callback(new WebSQLShadow(_this._db, 0, false));
+                        });
+                    };
+                    WebSQLDetached.prototype._applyToWithFiles = function (transaction, ftab, mainDrive, callback) {
+                        var _this = this;
+                        if (!ftab.length) {
+                            callback(new WebSQLShadow(this._db, this.timestamp, this._metadataTableIsValid));
+                            return;
+                        }
+                        var reportedFileCount = 0;
+                        var completeOne = function () {
+                            reportedFileCount++;
+                            if (reportedFileCount === ftab.length) {
+                                callback(new WebSQLShadow(_this._db, _this.timestamp, _this._metadataTableIsValid));
+                            }
+                        };
+                        var applyFile = function (file, table) {
+                            transaction.executeSql('SELECT * FROM "' + table + '"', [], function (transaction, result) {
+                                if (result.rows.length) {
+                                    var row = result.rows.item(0);
+                                    if (row.value === null)
+                                        mainDrive.write(file, null);
+                                    else if (typeof row.value === 'string')
+                                        mainDrive.write(file, fromSqlText(row.value));
+                                }
+                                completeOne();
+                            }, function (sqlError) {
+                                completeOne();
+                            });
+                        };
+                        for (var i = 0; i < ftab.length; i++) {
+                            applyFile(ftab[i].file, ftab[i].table);
+                        }
+                    };
+                    WebSQLDetached.prototype._purgeWithTables = function (transaction, tables, callback) {
+                        var _this = this;
+                        if (!tables.length) {
+                            callback(new WebSQLShadow(this._db, 0, false));
+                            return;
+                        }
+                        var droppedCount = 0;
+                        var completeOne = function () {
+                            droppedCount++;
+                            if (droppedCount === tables.length) {
+                                callback(new WebSQLShadow(_this._db, 0, false));
+                            }
+                        };
+                        for (var i = 0; i < tables.length; i++) {
+                            transaction.executeSql('DROP TABLE "' + tables[i] + '"', [], function (transaction, result) {
+                                completeOne();
+                            }, function (transaction, sqlError) {
+                                reportSQLError('Failed to drop table for the webSQL database.', sqlError);
+                                completeOne();
+                            });
+                        }
+                    };
+                    return WebSQLDetached;
+                }());
+                var WebSQLShadow = (function () {
+                    function WebSQLShadow(_db, timestamp, _metadataTableIsValid) {
+                        var _this = this;
+                        this._db = _db;
+                        this.timestamp = timestamp;
+                        this._metadataTableIsValid = _metadataTableIsValid;
+                        this._cachedUpdateStatementsByFile = {};
+                        this._closures = {
+                            updateMetadata: function (transaction) { return _this._updateMetadata(transaction); }
+                        };
+                    }
+                    WebSQLShadow.prototype.write = function (file, content) {
+                        if (content || typeof content === 'string') {
+                            this._updateCore(file, content);
+                        }
+                        else {
+                            this._dropFileTable(file);
+                        }
+                    };
+                    WebSQLShadow.prototype._updateCore = function (file, content) {
+                        var _this = this;
+                        var updateSQL = this._cachedUpdateStatementsByFile[file];
+                        if (!updateSQL) {
+                            var tableName = mangleDatabaseObjectName(file);
+                            updateSQL = this._createUpdateStatement(file, tableName);
+                        }
+                        this._db.transaction(function (transaction) {
+                            transaction.executeSql(updateSQL, ['content', content], _this._closures.updateMetadata, function (transaction, sqlError) { return _this._createTableAndUpdate(transaction, file, tableName, updateSQL, content); });
+                        }, function (sqlError) {
+                            reportSQLError('Transaction failure updating file "' + file + '".', sqlError);
+                        });
+                    };
+                    WebSQLShadow.prototype._createTableAndUpdate = function (transaction, file, tableName, updateSQL, content) {
+                        var _this = this;
+                        if (!tableName)
+                            tableName = mangleDatabaseObjectName(file);
+                        transaction.executeSql('CREATE TABLE "' + tableName + '" (name PRIMARY KEY, value)', [], function (transaction, result) {
+                            transaction.executeSql(updateSQL, ['content', content], _this._closures.updateMetadata, function (transaction, sqlError) {
+                                reportSQLError('Failed to update table "' + tableName + '" for file "' + file + '" after creation.', sqlError);
+                            });
+                        }, function (transaction, sqlError) {
+                            reportSQLError('Failed to create a table "' + tableName + '" for file "' + file + '".', sqlError);
+                        });
+                    };
+                    WebSQLShadow.prototype._dropFileTable = function (file) {
+                        var _this = this;
+                        var tableName = mangleDatabaseObjectName(file);
+                        this._db.transaction(function (transaction) {
+                            transaction.executeSql('DROP TABLE "' + tableName + '"', [], _this._closures.updateMetadata, function (transaction, sqlError) {
+                                reportSQLError('Failed to drop table "' + tableName + '" for file "' + file + '".', sqlError);
+                            });
+                        }, function (sqlError) {
+                            reportSQLError('Transaction failure dropping table "' + tableName + '" for file "' + file + '".', sqlError);
+                        });
+                    };
+                    WebSQLShadow.prototype._updateMetadata = function (transaction) {
+                        var updateMetadataSQL = 'INSERT OR REPLACE INTO "*metadata" VALUES (?,?)';
+                        transaction.executeSql(updateMetadataSQL, ['editedUTC', this.timestamp], function (transaction, result) { }, // TODO: generate closure statically
+                        function (transaction, error) {
+                            transaction.executeSql('CREATE TABLE "*metadata" (name PRIMARY KEY, value)', [], function (transaction, result) {
+                                transaction.executeSql(updateMetadataSQL, [], function () { }, function () { });
+                            }, function (transaction, sqlError) {
+                                reportSQLError('Failed to update metadata table after creation.', sqlError);
+                            });
+                        });
+                    };
+                    WebSQLShadow.prototype._createUpdateStatement = function (file, tableName) {
+                        return this._cachedUpdateStatementsByFile[file] =
+                            'INSERT OR REPLACE INTO "' + tableName + '" VALUES (?,?)';
+                    };
+                    return WebSQLShadow;
+                }());
+                function mangleDatabaseObjectName(name) {
+                    // no need to polyfill btoa, if webSQL exists
+                    if (name.toLowerCase() === name)
+                        return name;
+                    else
+                        return '=' + btoa(name);
+                }
+                function unmangleDatabaseObjectName(name) {
+                    if (!name || name.charAt(0) === '*')
+                        return null;
+                    if (name.charAt(0) !== '=')
+                        return name;
+                    try {
+                        return atob(name.slice(1));
+                    }
+                    catch (error) {
+                        return name;
+                    }
+                }
+                function listAllTables(transaction, callback, errorCallback) {
+                    transaction.executeSql('SELECT tbl_name  from sqlite_master WHERE type=\'table\'', [], function (transaction, result) {
+                        var tables = [];
+                        for (var i = 0; i < result.rows.length; i++) {
+                            var row = result.rows.item(i);
+                            var table = row.tbl_name;
+                            if (!table || (table[0] !== '*' && table.charAt(0) !== '=' && table.charAt(0) !== '/'))
+                                continue;
+                            tables.push(row.tbl_name);
+                        }
+                        callback(tables);
+                    }, function (transaction, sqlError) { return errorCallback(sqlError); });
+                }
+                webSQL.listAllTables = listAllTables;
+                function getFilenamesFromTables(tables) {
+                    var filenames = [];
+                    for (var i = 0; i < tables.length; i++) {
+                        var file = unmangleDatabaseObjectName(tables[i]);
+                        if (file)
+                            filenames.push({ table: tables[i], file: file });
+                    }
+                    return filenames;
+                }
+                function toSqlText(text) {
+                    if (text.indexOf('\u00FF') < 0 && text.indexOf('\u0000') < 0)
+                        return text;
+                    return text.replace(/\u00FF/g, '\u00FFf').replace(/\u0000/g, '\u00FF0');
+                }
+                function fromSqlText(sqlText) {
+                    if (sqlText.indexOf('\u00FF') < 0 && sqlText.indexOf('\u0000') < 0)
+                        return sqlText;
+                    return sqlText.replace(/\u00FFf/g, '\u00FF').replace(/\u00FF0/g, '\u0000');
+                }
+                function reportSQLError(message, sqlError) {
+                    if (typeof console !== 'undefined' && typeof console.error === 'function') {
+                        if (sqlError)
+                            console.error(message, sqlError);
+                        else
+                            console.error(sqlError);
+                    }
+                }
+            })(webSQL = attached.webSQL || (attached.webSQL = {}));
+        })(attached = persistence.attached || (persistence.attached = {}));
+    })(persistence || (persistence = {}));
+  }
+
+}
+
+function updateFromNode() {
+}
+
+
+
+///</script>
